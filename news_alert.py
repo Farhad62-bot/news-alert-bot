@@ -255,6 +255,8 @@ def run_loop():
                 critical = is_critical(title)
                 print(("[CRITICAL] " if critical else "") + msg)
                 send_telegram(msg, pin=critical)
+        print(f"[heartbeat] Checked {len(QUERIES)} topics, {len(new_items)} new item(s). "
+              f"Next check in {CHECK_INTERVAL_SECONDS // 60} min.")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 
