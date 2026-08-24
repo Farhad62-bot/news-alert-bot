@@ -1,8 +1,9 @@
 """
-Breaking Geopolitical News Alert Monitor (Render Web Service Compatible)
+Breaking Geopolitical News Alert Monitor (cron-job.org Compatible)
 ------------------------------------------------------------------------
 Watches Google News for geopolitical topics and sends alerts via Telegram.
-Runs a background Flask web server to satisfy Render's port 10000 health check.
+Runs a background Flask web server to satisfy Render's port 10000 health check
+and provides a /trigger-news endpoint for cron-job.org.
 """
 
 import feedparser
@@ -52,7 +53,7 @@ QUERIES = [
 ]
 
 CHECK_INTERVAL_SECONDS = 900     # 15 minutes polling loop
-MAX_AGE_MINUTES = 16             # once mode
+MAX_AGE_MINUTES = 16             # once mode window
 SEEN_FILE = "seen_news.json"
 MAX_SEEN_STORED = 3000
 
@@ -67,12 +68,18 @@ CRITICAL_KEYWORDS = [
     "evacuat", "ceasefire collapse", "retaliat",
 ]
 
-# --- Flask Server (Keeps Render Health Check Alive) -------------------
+# --- Flask Server -----------------------------------------------------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
     return "Berlin News Bot is active and running!", 200
+
+@flask_app.route('/trigger-news')
+def trigger_news():
+    """Triggered by cron-job.org every 15 minutes."""
+    Thread(target=run_once).start()
+    return "News check triggered successfully!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -217,7 +224,7 @@ def run_test():
 
 def run_once():
     items = fetch_recent_items(MAX_AGE_MINUTES)
-    logger.info(f"[once] Checked {len(QUERIES)} topics, found {len(items)} fresh item(s).")
+    logger.info(f"[cron trigger] Checked {len(QUERIES)} topics, found {len(items)} fresh item(s).")
     for query, title, link in items:
         msg = build_message(query, title, link)
         critical = is_critical(title)
@@ -228,7 +235,6 @@ def run_loop():
     seen = load_seen()
     logger.info(f"News alert monitor started. Watching {len(QUERIES)} topics, checking every {CHECK_INTERVAL_SECONDS}s.")
 
-    # Send initial startup confirmation to Telegram
     send_telegram(f"<b>{BOT_LABEL}</b>\n🤖 Bot successfully deployed and running on Render!")
 
     if not seen:
@@ -259,14 +265,14 @@ def run_loop():
 # --- Main Entry Point ------------------------------------------------
 
 if __name__ == "__main__":
-    # Start the Flask web server in a separate background thread so Render's health checker is satisfied
-    server_thread = Thread(target=run_web_server, daemon=True)
-    server_thread.start()
-
-    # Execute selected mode
     if "--test" in sys.argv:
         run_test()
     elif "--once" in sys.argv:
         run_once()
     else:
-        run_loop()
+        # Start Flask web server in a daemon thread
+        server_thread = Thread(target=run_web_server, daemon=True)
+        server_thread.start()
+        
+        # Keep the main process running to process requests
+        server_thread.join()
