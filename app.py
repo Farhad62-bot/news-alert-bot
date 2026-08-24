@@ -1,9 +1,9 @@
 """
-Breaking Geopolitical News Alert Monitor (cron-job.org Compatible)
+Breaking Geopolitical News Alert Monitor (cron-job.org & Render Compatible)
 ------------------------------------------------------------------------
 Watches Google News for geopolitical topics and sends alerts via Telegram.
 Runs a background Flask web server to satisfy Render's port 10000 health check
-and provides a /trigger-news endpoint for cron-job.org.
+and provides a /trigger-news endpoint for cron-job.org with duplicate filtering.
 """
 
 import feedparser
@@ -53,11 +53,11 @@ QUERIES = [
 ]
 
 CHECK_INTERVAL_SECONDS = 900     # 15 minutes polling loop
-MAX_AGE_MINUTES = 16             # once mode window
-SEEN_FILE = "seen_news.json"
-MAX_SEEN_STORED = 3000
-
+MAX_AGE_MINUTES = 25             # Freshness window for cron triggers
 BOT_LABEL = "BERLIN NEWS BOT"
+
+# Global in-memory deduplication tracking
+SEEN_ARTICLES = set()
 
 CRITICAL_KEYWORDS = [
     "attack", "strike", "invasion", "invades", "nuclear", "missile",
@@ -77,7 +77,7 @@ def home():
 
 @flask_app.route('/trigger-news')
 def trigger_news():
-    """Triggered by cron-job.org every 15 minutes."""
+    """Triggered by cron-job.org periodically."""
     Thread(target=run_once).start()
     return "News check triggered successfully!", 200
 
@@ -154,7 +154,7 @@ def build_message(query, title, link):
     )
 
 
-# --- Feed Fetching ---------------------------------------------------
+# --- Feed Fetching with Deduplication ---------------------------------
 
 def build_google_news_url(query):
     q = urllib.parse.quote(query)
@@ -169,8 +169,11 @@ def entry_age_minutes(entry, now_ts):
 
 
 def fetch_recent_items(max_age_minutes):
+    """Fetch fresh articles while suppressing duplicates."""
+    global SEEN_ARTICLES
     now_ts = time.time()
     items = []
+    
     for query in QUERIES:
         url = build_google_news_url(query)
         try:
@@ -178,38 +181,29 @@ def fetch_recent_items(max_age_minutes):
         except Exception as e:
             logger.error(f"Failed to fetch feed for '{query}': {e}")
             continue
+            
         for entry in feed.entries[:10]:
+            title = entry.get("title", "No title")
+            link = entry.get("link", "")
+            # Deduplicate by combining title and link into a unique signature
+            uid = entry.get("id") or f"{title}_{link}"
+            
+            # Skip if previously sent during this server session
+            if not uid or uid in SEEN_ARTICLES:
+                continue
+
             age = entry_age_minutes(entry, now_ts)
             if age is None or age > max_age_minutes or age < 0:
                 continue
-            items.append((query, entry.get("title", "No title"), entry.get("link", "")))
-    return items
+                
+            # Mark as seen and queue for sending
+            SEEN_ARTICLES.add(uid)
+            items.append((query, title, link))
 
+    # Prevent memory bloat by trimming historical IDs
+    if len(SEEN_ARTICLES) > 3000:
+        SEEN_ARTICLES = set(list(SEEN_ARTICLES)[-1500:])
 
-def load_seen():
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
-
-
-def save_seen(seen):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(list(seen)[-MAX_SEEN_STORED:], f)
-
-
-def fetch_all_items():
-    items = []
-    for query in QUERIES:
-        url = build_google_news_url(query)
-        try:
-            feed = feedparser.parse(url)
-        except Exception as e:
-            logger.error(f"Failed to fetch feed for '{query}': {e}")
-            continue
-        for entry in feed.entries[:10]:
-            items.append((query, entry.get("title", "No title"), entry.get("link", ""),
-                          entry.get("id") or entry.get("link")))
     return items
 
 
@@ -224,42 +218,11 @@ def run_test():
 
 def run_once():
     items = fetch_recent_items(MAX_AGE_MINUTES)
-    logger.info(f"[cron trigger] Checked {len(QUERIES)} topics, found {len(items)} fresh item(s).")
+    logger.info(f"[cron trigger] Checked {len(QUERIES)} topics, found {len(items)} new item(s).")
     for query, title, link in items:
         msg = build_message(query, title, link)
         critical = is_critical(title)
         send_telegram(msg, pin=critical)
-
-
-def run_loop():
-    seen = load_seen()
-    logger.info(f"News alert monitor started. Watching {len(QUERIES)} topics, checking every {CHECK_INTERVAL_SECONDS}s.")
-
-    send_telegram(f"<b>{BOT_LABEL}</b>\n🤖 Bot successfully deployed and running on Render!")
-
-    if not seen:
-        logger.info("First run: baselining current headlines (no alerts this pass)...")
-        for _, _, _, uid in fetch_all_items():
-            if uid:
-                seen.add(uid)
-        save_seen(seen)
-
-    while True:
-        new_items = []
-        for query, title, link, uid in fetch_all_items():
-            if not uid or uid in seen:
-                continue
-            seen.add(uid)
-            new_items.append((query, title, link))
-        if new_items:
-            save_seen(seen)
-            for query, title, link in new_items:
-                msg = build_message(query, title, link)
-                critical = is_critical(title)
-                send_telegram(msg, pin=critical)
-        
-        logger.info(f"[heartbeat] Checked {len(QUERIES)} topics, {len(new_items)} new item(s). Next check in {CHECK_INTERVAL_SECONDS // 60} min.")
-        time.sleep(CHECK_INTERVAL_SECONDS)
 
 
 # --- Main Entry Point ------------------------------------------------
@@ -274,5 +237,5 @@ if __name__ == "__main__":
         server_thread = Thread(target=run_web_server, daemon=True)
         server_thread.start()
         
-        # Keep the main process running to process requests
+        # Keep the main process running to listen for cron-job.org triggers
         server_thread.join()
