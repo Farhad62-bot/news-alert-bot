@@ -40,7 +40,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8946220251:AAHvtqQRnF
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "8776336439")
 
 QUERIES = [
-    "news"
     "Iran attack",
     "Israel Iran strike",
     "Iran nuclear",
