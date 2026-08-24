@@ -13,10 +13,9 @@ import html
 import calendar
 import urllib.parse
 import logging
-from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from threading import Thread
-from flask import Flask
+from flask import Flask, Response
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,10 +49,10 @@ QUERIES = [
     "dollar safe haven flows",
 ]
 
-MAX_AGE_MINUTES = 20  # Tightened age window
+MAX_AGE_MINUTES = 20  # Freshness window
 BOT_LABEL = "BERLIN NEWS BOT"
 
-# Global memory storage
+# Global memory storage for deduplication
 SEEN_ARTICLES = set()
 
 CRITICAL_KEYWORDS = [
@@ -76,7 +75,8 @@ def home():
 def trigger_news():
     """Triggered by cron-job.org periodically."""
     Thread(target=run_once).start()
-    return "News check triggered successfully!", 200
+    # Return minimal response to prevent "output too large" on cron-job.org
+    return Response("OK", status=200, mimetype='text/plain')
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -162,11 +162,8 @@ def get_entry_age_minutes(entry, now_ts):
     """Calculates entry age in minutes using multiple timestamp parsing fallbacks."""
     published_ts = None
     
-    # Method 1: Feedparser parsed structure
     if entry.get("published_parsed"):
         published_ts = calendar.timegm(entry.published_parsed)
-    
-    # Method 2: String parsing RFC 822 / ISO format
     elif entry.get("published"):
         try:
             dt = parsedate_to_datetime(entry.published)
@@ -175,7 +172,6 @@ def get_entry_age_minutes(entry, now_ts):
             pass
 
     if published_ts is None:
-        # If timestamp is completely missing, reject to avoid sending stale news
         return None
 
     return (now_ts - published_ts) / 60.0
@@ -200,12 +196,11 @@ def fetch_recent_items(max_age_minutes):
             if not title:
                 continue
 
-            # Check article age strictly
             age = get_entry_age_minutes(entry, now_ts)
             if age is None or age > max_age_minutes or age < 0:
                 continue
 
-            # Deduplicate by normalized headline title
+            # Normalized headline deduplication
             normalized_title = title.lower().replace(" ", "")
             if normalized_title in SEEN_ARTICLES:
                 continue
@@ -213,7 +208,7 @@ def fetch_recent_items(max_age_minutes):
             SEEN_ARTICLES.add(normalized_title)
             items.append((query, title, link))
 
-    # Memory cleanup
+    # Prevent memory growth over time
     if len(SEEN_ARTICLES) > 2000:
         SEEN_ARTICLES = set(list(SEEN_ARTICLES)[-1000:])
 
