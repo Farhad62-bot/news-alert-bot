@@ -31,16 +31,12 @@ def run_web_server():
 # ---------------------------------------------------------
 # 2. TELEGRAM BOT & NEWS LOGIC
 # ---------------------------------------------------------
-# Environment variables set in Render Dashboard
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# Credentials hardcoded or pulled from environment variables
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8946220251:AAHvtqQRnF2N0deXN91g2RPR--GVR3YB1jQ")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "8776336439")
 
 def send_telegram_message(message_text):
     """Sends a text message to your specified Telegram chat/channel."""
-    if not BOT_TOKEN or not CHAT_ID:
-        logger.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing from environment variables!")
-        return
-
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -51,7 +47,7 @@ def send_telegram_message(message_text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            logger.info("Successfully sent news update to Telegram.")
+            logger.info("Successfully sent message to Telegram.")
         else:
             logger.error(f"Failed to send message: {response.status_code} - {response.text}")
     except Exception as e:
@@ -61,7 +57,7 @@ def fetch_and_send_news():
     """Place your news scraping or API logic here."""
     # EXAMPLE NEWS LOGIC: Replace this placeholder with your actual news-fetching code
     news_items = [
-        "<b>Latest Breaking News</b>\n\nHere is your periodic update from the bot!"
+        "<b>Latest News Update</b>\n\nYour news alert bot is active and running successfully!"
     ]
     
     for item in news_items:
@@ -71,8 +67,8 @@ def news_loop():
     """Background loop that periodically checks and posts news."""
     logger.info("Starting news fetch loop...")
     
-    # Optional startup alert to verify bot is connected
-    send_telegram_message("🤖 Bot has successfully started on Render!")
+    # Startup test notification sent directly to your Telegram chat
+    send_telegram_message("🤖 Bot has successfully connected and deployed on Render!")
     
     while True:
         try:
@@ -88,7 +84,7 @@ def news_loop():
 # 3. MAIN APPLICATION ENTRYPOINT
 # ---------------------------------------------------------
 if __name__ == '__main__':
-    # Start Flask web server in a separate thread so Render gets its port binding response
+    # Start Flask web server in a separate thread so Render gets its port 10000 response
     server_thread = Thread(target=run_web_server, daemon=True)
     server_thread.start()
 
