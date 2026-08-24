@@ -15,7 +15,7 @@ import urllib.parse
 import logging
 from email.utils import parsedate_to_datetime
 from threading import Thread
-from flask import Flask, Response
+from flask import Flask, jsonify
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -69,14 +69,14 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Berlin News Bot is active and running!", 200
+    return jsonify(status="active", message="Berlin News Bot is running"), 200
 
 @flask_app.route('/trigger-news')
 def trigger_news():
     """Triggered by cron-job.org periodically."""
     Thread(target=run_once).start()
-    # Return minimal response to prevent "output too large" on cron-job.org
-    return Response("OK", status=200, mimetype='text/plain')
+    # Return minimal JSON response to fix "Failed (output too large)" on cron-job.org
+    return jsonify(status="ok"), 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
