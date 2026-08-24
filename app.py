@@ -2,24 +2,22 @@
 Breaking Geopolitical News Alert Monitor (cron-job.org & Render Compatible)
 ------------------------------------------------------------------------
 Watches Google News for geopolitical topics and sends alerts via Telegram.
-Runs a background Flask web server to satisfy Render's port 10000 health check
-and provides a /trigger-news endpoint for cron-job.org with duplicate filtering.
 """
 
 import feedparser
 import requests
 import time
-import json
 import os
 import sys
 import html
 import calendar
 import urllib.parse
 import logging
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from threading import Thread
 from flask import Flask
 
-# Enable logging for Render console tracking
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -52,11 +50,10 @@ QUERIES = [
     "dollar safe haven flows",
 ]
 
-CHECK_INTERVAL_SECONDS = 900     # 15 minutes polling loop
-MAX_AGE_MINUTES = 25             # Freshness window for cron triggers
+MAX_AGE_MINUTES = 20  # Tightened age window
 BOT_LABEL = "BERLIN NEWS BOT"
 
-# Global in-memory deduplication tracking
+# Global memory storage
 SEEN_ARTICLES = set()
 
 CRITICAL_KEYWORDS = [
@@ -154,22 +151,37 @@ def build_message(query, title, link):
     )
 
 
-# --- Feed Fetching with Deduplication ---------------------------------
+# --- Feed Fetching ---------------------------------------------------
 
 def build_google_news_url(query):
     q = urllib.parse.quote(query)
     return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
 
 
-def entry_age_minutes(entry, now_ts):
-    if not entry.get("published_parsed"):
+def get_entry_age_minutes(entry, now_ts):
+    """Calculates entry age in minutes using multiple timestamp parsing fallbacks."""
+    published_ts = None
+    
+    # Method 1: Feedparser parsed structure
+    if entry.get("published_parsed"):
+        published_ts = calendar.timegm(entry.published_parsed)
+    
+    # Method 2: String parsing RFC 822 / ISO format
+    elif entry.get("published"):
+        try:
+            dt = parsedate_to_datetime(entry.published)
+            published_ts = dt.timestamp()
+        except Exception:
+            pass
+
+    if published_ts is None:
+        # If timestamp is completely missing, reject to avoid sending stale news
         return None
-    published_ts = calendar.timegm(entry.published_parsed)
+
     return (now_ts - published_ts) / 60.0
 
 
 def fetch_recent_items(max_age_minutes):
-    """Fetch fresh articles while suppressing duplicates."""
     global SEEN_ARTICLES
     now_ts = time.time()
     items = []
@@ -183,26 +195,27 @@ def fetch_recent_items(max_age_minutes):
             continue
             
         for entry in feed.entries[:10]:
-            title = entry.get("title", "No title")
-            link = entry.get("link", "")
-            # Deduplicate by combining title and link into a unique signature
-            uid = entry.get("id") or f"{title}_{link}"
-            
-            # Skip if previously sent during this server session
-            if not uid or uid in SEEN_ARTICLES:
+            title = entry.get("title", "").strip()
+            link = entry.get("link", "").strip()
+            if not title:
                 continue
 
-            age = entry_age_minutes(entry, now_ts)
+            # Check article age strictly
+            age = get_entry_age_minutes(entry, now_ts)
             if age is None or age > max_age_minutes or age < 0:
                 continue
+
+            # Deduplicate by normalized headline title
+            normalized_title = title.lower().replace(" ", "")
+            if normalized_title in SEEN_ARTICLES:
+                continue
                 
-            # Mark as seen and queue for sending
-            SEEN_ARTICLES.add(uid)
+            SEEN_ARTICLES.add(normalized_title)
             items.append((query, title, link))
 
-    # Prevent memory bloat by trimming historical IDs
-    if len(SEEN_ARTICLES) > 3000:
-        SEEN_ARTICLES = set(list(SEEN_ARTICLES)[-1500:])
+    # Memory cleanup
+    if len(SEEN_ARTICLES) > 2000:
+        SEEN_ARTICLES = set(list(SEEN_ARTICLES)[-1000:])
 
     return items
 
@@ -218,7 +231,7 @@ def run_test():
 
 def run_once():
     items = fetch_recent_items(MAX_AGE_MINUTES)
-    logger.info(f"[cron trigger] Checked {len(QUERIES)} topics, found {len(items)} new item(s).")
+    logger.info(f"[cron trigger] Checked {len(QUERIES)} topics, found {len(items)} fresh item(s).")
     for query, title, link in items:
         msg = build_message(query, title, link)
         critical = is_critical(title)
@@ -233,9 +246,6 @@ if __name__ == "__main__":
     elif "--once" in sys.argv:
         run_once()
     else:
-        # Start Flask web server in a daemon thread
         server_thread = Thread(target=run_web_server, daemon=True)
         server_thread.start()
-        
-        # Keep the main process running to listen for cron-job.org triggers
         server_thread.join()
